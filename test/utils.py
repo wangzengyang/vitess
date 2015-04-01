@@ -256,12 +256,6 @@ def wait_procs(proc_list, raise_on_error=True):
       if raise_on_error:
         raise CalledProcessError(proc.returncode, ' '.join(proc.args))
 
-def run_procs(cmds, raise_on_error=True):
-  procs = []
-  for cmd in cmds:
-    procs.append(run_bg(cmd))
-  wait_procs(procs, raise_on_error=raise_on_error)
-
 def validate_topology(ping_tablets=False):
   if ping_tablets:
     run_vtctl(['Validate', '-ping-tablets'])
@@ -324,6 +318,40 @@ def wait_for_vars(name, port, var=None):
     if v and (var is None or var in v):
       break
     timeout = wait_step('waiting for /debug/vars of %s' % name, timeout)
+
+def poll_for_vars(name, port, condition_msg, timeout=60.0, condition_fn=None):
+  """Polls for debug variables to exist, or match specific conditions, within a timeout.
+
+  This function polls in a tight loop, with no sleeps. This is useful for
+  variables that are expected to be short-lived (e.g., a 'Done' state
+  immediately before a process exits).
+
+  Args:
+    name - the name of the process that we're trying to poll vars from.
+    port - the port number that we should poll for variables.
+    condition_msg - string describing the conditions that we're polling for,
+      used for error messaging.
+    timeout - number of seconds that we should attempt to poll for.
+    condition_fn - a function that takes the debug vars dict as input, and
+      returns a truthy value if it matches the success conditions.
+
+  Raises:
+    TestError, if the conditions aren't met within the given timeout
+
+  Returns:
+    dict of debug variables
+  """
+  start_time = time.time()
+  while True:
+    if (time.time() - start_time) >= timeout:
+      raise TestError('Timed out polling for vars from %s; condition "%s" not met' % (name, condition_msg))
+    _vars = get_vars(port)
+    if _vars is None:
+      continue
+    if condition_fn is None:
+      return _vars
+    elif condition_fn(_vars):
+      return _vars
 
 def apply_vschema(vschema):
   fname = os.path.join(environment.tmproot, "vschema.json")
@@ -463,10 +491,37 @@ def run_vtctl_json(clargs):
 
 # vtworker helpers
 def run_vtworker(clargs, log_level='', auto_log=False, expect_fail=False, **kwargs):
+  """Runs a vtworker process, returning the stdout and stderr"""
+  cmd, _ = _get_vtworker_cmd(clargs, log_level, auto_log)
+  if expect_fail:
+    return run_fail(cmd, **kwargs)
+  return run(cmd, **kwargs)
+
+def run_vtworker_bg(clargs, log_level='', auto_log=False, **kwargs):
+  """Starts a background vtworker process.
+
+  Returns:
+    proc - process returned by subprocess.Popen
+    port - int with the port number that the vtworker is running with
+  """
+  cmd, port = _get_vtworker_cmd(clargs, log_level, auto_log)
+  return run_bg(cmd, **kwargs), port
+
+def _get_vtworker_cmd(clargs, log_level='', auto_log=False):
+  """Assembles the command that is needed to run a vtworker.
+
+  Returns:
+    cmd - list of cmd arguments, can be passed to any `run`-like functions
+    port - int with the port number that the vtworker is running with
+  """
+  port = environment.reserve_ports(1)
   args = environment.binary_args('vtworker') + [
           '-log_dir', environment.vtlogroot,
           '-min_healthy_rdonly_endpoints', '1',
-          '-port', str(environment.reserve_ports(1))]
+          '-port', str(port),
+          '-resolve_ttl', '2s',
+          '-executefetch_retry_time', '1s',
+          ]
   args.extend(environment.topo_server().flags())
   args.extend(protocols_flavor().tablet_manager_protocol_flags())
 
@@ -481,9 +536,7 @@ def run_vtworker(clargs, log_level='', auto_log=False, expect_fail=False, **kwar
     args.append('--stderrthreshold=%s' % log_level)
 
   cmd = args + clargs
-  if expect_fail:
-    return run_fail(cmd, **kwargs)
-  return run(cmd, **kwargs)
+  return cmd, port
 
 # vtclient2 helpers
 # driver is one of:

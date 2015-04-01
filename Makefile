@@ -89,7 +89,8 @@ small_integration_test_files = \
 	secure.py \
 	binlog.py \
 	clone.py \
-	update_stream.py
+	update_stream.py \
+	worker.py
 
 medium_integration_test_files = \
 	tabletmanager.py \
@@ -118,7 +119,8 @@ worker_integration_test_files = \
 	vertical_split.py \
 	vertical_split_vtgate.py \
 	initial_sharding.py \
-	initial_sharding_bytes.py
+	initial_sharding_bytes.py \
+	worker.py
 
 .ONESHELL:
 SHELL = /bin/bash
