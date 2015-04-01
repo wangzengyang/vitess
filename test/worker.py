@@ -127,10 +127,9 @@ class TestSplitCloneResiliency(unittest.TestCase):
   """Tests that the SplitClone worker is resilient to particular failures."""
 
   def _init_keyspace(self):
-    """Creates a `test_keyspace` keyspace, and sets a sharding key."""
-    utils.run_vtctl(['CreateKeyspace', 'test_keyspace'])
-    utils.run_vtctl(['SetKeyspaceShardingInfo', 'test_keyspace',
-                     'keyspace_id', KEYSPACE_ID_TYPE])
+    """Creates a `test_keyspace` keyspace with a sharding key."""
+    utils.run_vtctl(['CreateKeyspace', '-sharding_column_name', 'keyspace_id',
+      '-sharding_column_type', KEYSPACE_ID_TYPE,'test_keyspace'])
 
   def run_shard_tablets(self, shard_name, shard_tablets, create_db=True, create_table=True, wait_state='SERVING'):
     """Handles all the necessary work for initially running a shard's tablets.
@@ -288,13 +287,13 @@ class TestSplitCloneResiliency(unittest.TestCase):
     """TODO(aaijazi): Should probably do the following:
 
     - Drop db
-    - Scrap tablet
+    - Scrap tablets
     - Delete tablets
     - Delete keyspace shards
 
     and test that it works reasonably fast.
 
-    Might need to move init_keysace to a class setUp if it can't be reversed.
+    Might need to move init_keysace to a module setUp if it can't be reversed.
     """
     pass
 
