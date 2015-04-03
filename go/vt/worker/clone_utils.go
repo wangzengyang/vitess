@@ -187,6 +187,9 @@ func executeFetchWithRetries(ctx context.Context, wr *wrangler.Wrangler, ti *top
 		case errNo == "1290":
 			wr.Logger().Warningf("ExecuteFetch failed on %v; will reresolve and retry because it's due to a MySQL read-only error: %v", ti, err)
 			statsRetryCounters.Add("ReadOnly", 1)
+		case errNo == "2002" || errNo == "2006":
+			wr.Logger().Warningf("ExecuteFetch failed on %v; will reresolve and retry because it's due to a MySQL connection error: %v", ti, err)
+			statsRetryCounters.Add("ConnectionError", 1)
 		case errNo == "1062":
 			if !isRetry {
 				return ti, fmt.Errorf("ExecuteFetch failed on %v on the first attempt; not retrying as this is not a recoverable error: %v", ti, err)

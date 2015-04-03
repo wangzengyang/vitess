@@ -17,7 +17,9 @@ import environment
 import utils
 import tablet
 
+
 KEYSPACE_ID_TYPE = keyrange_constants.KIT_UINT64
+
 
 class ShardTablets(namedtuple('ShardTablets', 'master replicas rdonlys')):
   """ShardTablets is a container for all the tablet.Tablets of a shard.
@@ -70,6 +72,12 @@ shard_0_tablets = ShardTablets(shard_0_master, [shard_0_replica], [shard_0_rdonl
 shard_1_tablets = ShardTablets(shard_1_master, [shard_1_replica], [shard_1_rdonly1])
 
 
+def init_keyspace():
+  """Creates a `test_keyspace` keyspace with a sharding key."""
+  utils.run_vtctl(['CreateKeyspace', '-sharding_column_name', 'keyspace_id',
+    '-sharding_column_type', KEYSPACE_ID_TYPE,'test_keyspace'])
+
+
 def setUpModule():
   try:
     environment.topo_server().setup()
@@ -86,6 +94,7 @@ def setUpModule():
         shard_1_rdonly1.init_mysql(),
         ]
     utils.wait_procs(setup_procs)
+    init_keyspace()
   except:
     tearDownModule()
     raise
@@ -123,13 +132,8 @@ def tearDownModule():
   shard_1_rdonly1.remove_tree()
 
 
-class TestSplitCloneResiliency(unittest.TestCase):
+class TestBaseSplitCloneResiliency(unittest.TestCase):
   """Tests that the SplitClone worker is resilient to particular failures."""
-
-  def _init_keyspace(self):
-    """Creates a `test_keyspace` keyspace with a sharding key."""
-    utils.run_vtctl(['CreateKeyspace', '-sharding_column_name', 'keyspace_id',
-      '-sharding_column_type', KEYSPACE_ID_TYPE,'test_keyspace'])
 
   def run_shard_tablets(self, shard_name, shard_tablets, create_db=True, create_table=True, wait_state='SERVING'):
     """Handles all the necessary work for initially running a shard's tablets.
@@ -170,7 +174,6 @@ class TestSplitCloneResiliency(unittest.TestCase):
     # Reparent to choose an initial master
     utils.run_vtctl(['ReparentShard', '-force', 'test_keyspace/%s' % shard_name,
                      shard_tablets.master.tablet_alias], auto_log=True)
-
     utils.run_vtctl(['RebuildKeyspaceGraph', 'test_keyspace'], auto_log=True)
 
     create_table_sql = (
@@ -261,9 +264,7 @@ class TestSplitCloneResiliency(unittest.TestCase):
           auto_log=True)
 
   def setUp(self):
-    """Creates the necessary keyspace/shards, starts the tablets, and inserts some data."""
-    self._init_keyspace()
-
+    """Creates the necessary shards, starts the tablets, and inserts some data."""
     self.run_shard_tablets('0', shard_tablets)
     # create the split shards
     self.run_shard_tablets('-80', shard_0_tablets, create_db=False,
@@ -284,29 +285,38 @@ class TestSplitCloneResiliency(unittest.TestCase):
     logging.debug("Done inserting initial data")
 
   def tearDown(self):
-    """TODO(aaijazi): Should probably do the following:
+    """Tries to do the minimum to reset topology and tablets to their initial states.
 
-    - Drop db
-    - Scrap tablets
-    - Delete tablets
-    - Delete keyspace shards
-
-    and test that it works reasonably fast.
-
-    Might need to move init_keysace to a module setUp if it can't be reversed.
+    When benchmarked, this seemed to take around 30% of the time of (setupModule +
+    tearDownModule).
     """
-    pass
+    for shard_tablet in [shard_tablets, shard_0_tablets, shard_1_tablets]:
+      for tablet in shard_tablet.all_tablets:
+        tablet.reset_mysql_data()
+        tablet.scrap(force=True, skip_rebuild=True)
+        utils.run_vtctl(['DeleteTablet', tablet.tablet_alias], auto_log=True)
+    utils.run_vtctl(['RebuildKeyspaceGraph', 'test_keyspace'], auto_log=True)
+    for shard in ['0', '-80', '80-']:
+      utils.run_vtctl(['DeleteShard', 'test_keyspace/%s' % shard], auto_log=True)
 
-  def test_reparent_during_worker_copy(self):
-    """This test simulates a destination reparent during a worker SplitClone copy.
+  def verify_successful_worker_copy_with_reparent(self, mysql_down=False):
+    """Verifies that vtworker can succesfully copy data for a SplitClone.
 
-    The SplitClone command should be able to gracefully handle the reparent and
-    end up with the correct data on the destination.
+    Order of operations:
+    1. Run a background vtworker
+    2. Wait until the worker sucessfully resolves the destination masters.
+    3. Reparent the destination tablets
+    4. Wait until the vtworker copy is finished
+    5. Verify that the worker was forced to reresolve topology and retry writes
+      due to the reparent.
+    6. Verify that the data was copied successfully to both new shards
 
-    Note: this test has a small possibility of flaking, due to the timing issues
-    involved. It's possible for the worker to finish the copy step before the
-    reparent succeeds, in which case there are assertions that will fail. This
-    seems better than having the test silently pass.
+    Args:
+      mysql_down - boolean, True iff we expect the MySQL instances on the
+        destination masters to be down.
+
+    Raises:
+      AssertionError if things didn't go as expected.
     """
     worker_proc, worker_port = utils.run_vtworker_bg(['--cell', 'test_nj',
                         'SplitClone',
@@ -314,14 +324,29 @@ class TestSplitCloneResiliency(unittest.TestCase):
                         'test_keyspace/0'],
                        auto_log=True)
 
-    utils.poll_for_vars('vtworker', worker_port,
-      'WorkerDestinationActualResolves >= 1',
-      condition_fn=lambda v: v.get('WorkerDestinationActualResolves') >= 1)
+    if mysql_down:
+      # If MySQL is down, we wait until resolving at least twice (to verify that
+      # we do reresolve and retry due to MySQL being down.
+      worker_vars = utils.poll_for_vars('vtworker', worker_port,
+        'WorkerDestinationActualResolves >= 2',
+        condition_fn=lambda v: v.get('WorkerDestinationActualResolves') >= 2)
+      self.assertNotEqual(worker_vars['WorkerRetryCount'], {},
+        "expected vtworker to retry, but it didn't")
 
-    utils.run_vtctl(['ReparentShard', 'test_keyspace/-80',
-      shard_0_replica.tablet_alias], auto_log=True)
-    utils.run_vtctl(['ReparentShard', 'test_keyspace/80-',
-      shard_1_replica.tablet_alias], auto_log=True)
+      # Original masters have no running MySQL, so need to force the reparent
+      utils.run_vtctl(['ReparentShard', '-force', 'test_keyspace/-80',
+        shard_0_replica.tablet_alias], auto_log=True)
+      utils.run_vtctl(['ReparentShard', '-force', 'test_keyspace/80-',
+        shard_1_replica.tablet_alias], auto_log=True)
+    else:
+      utils.poll_for_vars('vtworker', worker_port,
+        'WorkerDestinationActualResolves >= 1',
+        condition_fn=lambda v: v.get('WorkerDestinationActualResolves') >= 1)
+
+      utils.run_vtctl(['ReparentShard', 'test_keyspace/-80',
+        shard_0_replica.tablet_alias], auto_log=True)
+      utils.run_vtctl(['ReparentShard', 'test_keyspace/80-',
+        shard_1_replica.tablet_alias], auto_log=True)
 
     worker_vars = utils.poll_for_vars('vtworker', worker_port,
       'WorkerState == cleaning up',
@@ -344,6 +369,41 @@ class TestSplitCloneResiliency(unittest.TestCase):
 
     self.assert_shard_data_equal(0, shard_master, shard_0_tablets.replica)
     self.assert_shard_data_equal(1, shard_master, shard_1_tablets.replica)
+
+
+class TestReparentDuringWorkerCopy(TestBaseSplitCloneResiliency):
+
+  def test_reparent_during_worker_copy(self):
+    """This test simulates a destination reparent during a worker SplitClone copy.
+
+    The SplitClone command should be able to gracefully handle the reparent and
+    end up with the correct data on the destination.
+
+    Note: this test has a small possibility of flaking, due to the timing issues
+    involved. It's possible for the worker to finish the copy step before the
+    reparent succeeds, in which case there are assertions that will fail. This
+    seems better than having the test silently pass.
+    """
+    self.verify_successful_worker_copy_with_reparent()
+
+
+class TestMysqlDownDuringWorkerCopy(TestBaseSplitCloneResiliency):
+
+  def setUp(self):
+    """Shuts down MySQL on the destination masters (in addition to the base setup)"""
+    super(TestMysqlDownDuringWorkerCopy, self).setUp()
+    utils.wait_procs([shard_0_master.shutdown_mysql(),
+      shard_1_master.shutdown_mysql()])
+
+  def tearDown(self):
+    """Restarts the MySQL processes that were killed during the setup."""
+    utils.wait_procs([shard_0_master.start_mysql(),
+      shard_1_master.start_mysql()])
+    super(TestMysqlDownDuringWorkerCopy, self).tearDown()
+
+  def test_mysql_down_during_worker_copy(self):
+    """This test simulates MySQL being down on the destination masters."""
+    self.verify_successful_worker_copy_with_reparent(mysql_down=True)
 
 if __name__ == '__main__':
   utils.main()

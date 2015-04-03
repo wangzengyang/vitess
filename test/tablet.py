@@ -223,6 +223,14 @@ class Tablet(object):
         return True
     return False
 
+  def has_table(self, dbname, name):
+    rows = self.mquery(dbname, 'show tables')
+    for row in rows:
+      tablename = row[0]
+      if tablename == name:
+        return True
+    return False
+
   def drop_db(self, name):
     self.mquery('', 'drop database if exists %s' % name)
     while self.has_db(name):
@@ -230,6 +238,24 @@ class Tablet(object):
                     self.tablet_alias, name)
       time.sleep(0.3)
       self.mquery('', 'drop database if exists %s' % name)
+
+  def drop_table(self, db_name, name):
+    self.mquery(db_name, 'drop table if exists %s' % name)
+    while self.has_table(db_name, name):
+      logging.debug('%s sleeping while waiting for table drop: %s',
+                    self.tablet_alias, name)
+      time.sleep(0.3)
+      self.mquery(db_name, 'drop table if exists %s' % name)
+
+  def _drop_vt_tables(self):
+    """Drops unnecessary tables in the _vt database"""
+    tables = self.mquery('_vt', 'show tables')
+    for table in tables:
+      name = table[0]
+      # The existence of these tables is required for reparents
+      if name in ['reparent_log', 'replication_log']:
+        continue
+      self.drop_table('_vt', name)
 
   def create_db(self, name):
     self.drop_db(name)
@@ -243,6 +269,16 @@ class Tablet(object):
       if dbname in ['information_schema', '_vt', 'mysql']:
         continue
       self.drop_db(dbname)
+
+  def reset_mysql_data(self):
+    """Attempts to reset MySQL to a clean slate.
+
+    Useful for wiping MySQL state at the end of a test, without having to
+    go through the full teardown and spin up cycles.
+    """
+    self.clean_dbs()
+    self._drop_vt_tables()
+    self.mquery('', mysql_flavor().reset_binlog_commands())
 
   def wait_check_db_var(self, name, value):
     for _ in range(3):
