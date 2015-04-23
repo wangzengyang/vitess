@@ -505,7 +505,7 @@ func (stc *ScatterConn) aggregateErrors(errors []error) error {
 	}
 	return &ShardConnError{
 		Code: code,
-		Err:  fmt.Sprintf("%v", strings.Join(errs, "\n")),
+		Err:  fmt.Errorf("%v", strings.Join(errs, "\n")),
 	}
 }
 
