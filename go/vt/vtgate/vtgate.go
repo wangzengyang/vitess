@@ -21,6 +21,7 @@ import (
 	kproto "github.com/youtube/vitess/go/vt/key"
 	"github.com/youtube/vitess/go/vt/logutil"
 	"github.com/youtube/vitess/go/vt/servenv"
+	"github.com/youtube/vitess/go/vt/tabletserver/tabletconn"
 	"github.com/youtube/vitess/go/vt/topo"
 	"github.com/youtube/vitess/go/vt/vtgate/planbuilder"
 	"github.com/youtube/vitess/go/vt/vtgate/proto"
@@ -540,6 +541,33 @@ func (vtg *VTGate) SplitQuery(ctx context.Context, req *proto.SplitQueryRequest,
 	}
 	reply.Splits = splits
 	return nil
+}
+
+func logError(err error, query interface{}, logger *logutil.ThrottledLogger) {
+	logMethod := logger.Errorf
+	if isErrorCausedByVTGate(err) {
+		logMethod = logger.Errorf
+	} else {
+		// Any errors that are caused by VTGate dependencies (e.g, VtTablet) should be logged
+		// as erorrs in those componenets, but logged to Info in VTGate itself.
+		logMethod = logger.Infof
+	}
+	logMethod("%v, query: %+v", err, query)
+}
+
+func isErrorCausedByVTGate(err error) bool {
+	shardConnErr, ok := err.(*ShardConnError)
+	if ok {
+		in := shardConnErr.Err
+		_, ok := in.(*tabletconn.ServerError)
+		if ok {
+			// The error was caused by VtTablet
+			return false
+		}
+	}
+	// If we're not certain what caused the error, we default to assuming that
+	// VTGate was at fault.
+	return true
 }
 
 func handleExecuteError(err error, statsKey []string, query interface{}, logger *logutil.ThrottledLogger) string {

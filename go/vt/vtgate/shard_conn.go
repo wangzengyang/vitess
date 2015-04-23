@@ -96,7 +96,7 @@ type ShardConnError struct {
 
 func (e *ShardConnError) Error() string {
 	if e.ShardIdentifier == "" {
-		return e.Err.Error()
+		return fmt.Sprintf("%v", e.Err)
 	}
 	return fmt.Sprintf("shard, host: %s, %v", e.ShardIdentifier, e.Err)
 }
