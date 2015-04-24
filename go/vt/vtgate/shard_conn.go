@@ -6,6 +6,8 @@ package vtgate
 
 import (
 	"fmt"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,15 +92,23 @@ type ShardConnError struct {
 	Code            int
 	ShardIdentifier string
 	InTransaction   bool
-	// Preserve the original error, so that we don't need to parse the error string.
-	Err error
+	// Preserve the original error(s), so that we don't need to parse the error string.
+	Errs []error
 }
 
 func (e *ShardConnError) Error() string {
-	if e.ShardIdentifier == "" {
-		return fmt.Sprintf("%v", e.Err)
+	errStrings := make([]string, 0, len(e.Errs))
+	for _, err := range e.Errs {
+		errStrings = append(errStrings, e.singleError(err))
 	}
-	return fmt.Sprintf("shard, host: %s, %v", e.ShardIdentifier, e.Err)
+	return fmt.Sprintf("%v", strings.Join(errStrings, "\n"))
+}
+
+func (e *ShardConnError) singleError(err error) string {
+	if e.ShardIdentifier == "" {
+		return fmt.Sprintf("%v", err)
+	}
+	return fmt.Sprintf("shard, host: %s, %v", e.ShardIdentifier, err)
 }
 
 // Dial creates tablet connection and connects to the vttablet.
@@ -391,14 +401,23 @@ func (sdc *ShardConn) WrapError(in error, endPoint topo.EndPoint, inTransaction 
 	code := tabletconn.ERR_NORMAL
 	serverError, ok := in.(*tabletconn.ServerError)
 	if ok {
+		fmt.Printf("WrapError: TabletConn ServerError: %v\n", serverError)
 		code = serverError.Code
+		in = serverError
+		fmt.Printf("WrapError: TabletConn ServerError code: %v\n", code)
 	}
 
 	shardConnErr := &ShardConnError{
 		Code:            code,
 		ShardIdentifier: shardIdentifier,
 		InTransaction:   inTransaction,
-		Err:             in,
+		Errs:            []error{in},
+	}
+	inErr := shardConnErr.Errs[0]
+	fmt.Printf("Type of inErr: %v\n", reflect.TypeOf(inErr).String())
+	_, ok = inErr.(*tabletconn.ServerError)
+	if ok {
+		fmt.Println("WrapError: ServerError caught")
 	}
 	return shardConnErr
 }

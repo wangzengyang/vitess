@@ -499,13 +499,21 @@ func (stc *ScatterConn) aggregateErrors(errors []error) error {
 	} else {
 		code = tabletconn.ERR_NORMAL
 	}
-	errs := make([]string, 0, len(errors))
+
+	// Flatten the list of all errors, as we don't want to nest ShardConn errors.
+	// We assume that ShardConn errors are not already nested.
+	var errs []error
 	for _, e := range errors {
-		errs = append(errs, e.Error())
+		connError, ok := e.(*ShardConnError)
+		if ok {
+			errs = append(errs, connError.Errs...)
+		} else {
+			errs = append(errs, e)
+		}
 	}
 	return &ShardConnError{
 		Code: code,
-		Err:  fmt.Errorf("%v", strings.Join(errs, "\n")),
+		Errs: errs,
 	}
 }
 

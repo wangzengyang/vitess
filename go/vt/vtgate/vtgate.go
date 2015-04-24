@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 
@@ -546,10 +547,13 @@ func (vtg *VTGate) SplitQuery(ctx context.Context, req *proto.SplitQueryRequest,
 func logError(err error, query interface{}, logger *logutil.ThrottledLogger) {
 	logMethod := logger.Errorf
 	if isErrorCausedByVTGate(err) {
+		fmt.Println("Logging as Error because error was caused by VTGate!")
 		logMethod = logger.Errorf
 	} else {
 		// Any errors that are caused by VTGate dependencies (e.g, VtTablet) should be logged
-		// as erorrs in those componenets, but logged to Info in VTGate itself.
+		// as errors in those components, but logged to Info in VTGate itself.
+		fmt.Println("Logging as Info because error was not caused by VTGate!")
+		infoErrors.Add("NonVtgateErrors", 1)
 		logMethod = logger.Infof
 	}
 	logMethod("%v, query: %+v", err, query)
@@ -558,12 +562,19 @@ func logError(err error, query interface{}, logger *logutil.ThrottledLogger) {
 func isErrorCausedByVTGate(err error) bool {
 	shardConnErr, ok := err.(*ShardConnError)
 	if ok {
-		in := shardConnErr.Err
-		_, ok := in.(*tabletconn.ServerError)
-		if ok {
-			// The error was caused by VtTablet
-			return false
+		fmt.Println("ShardConnError caught")
+		for _, inErr := range shardConnErr.Errs {
+			fmt.Printf("Type of inErr: %v\n", reflect.TypeOf(inErr).String())
+			_, ok := inErr.(*tabletconn.ServerError)
+			if !ok {
+				// Return true if even a single error within the list of ShardConn errors was
+				// caused by VTGate.
+				return true
+			}
+			fmt.Println("ServerError caught")
 		}
+		// All the errors were caused by VtTablet
+		return false
 	}
 	// If we're not certain what caused the error, we default to assuming that
 	// VTGate was at fault.
@@ -578,7 +589,8 @@ func handleExecuteError(err error, statsKey []string, query interface{}, logger 
 		normalErrors.Add(statsKey, 1)
 	} else {
 		normalErrors.Add(statsKey, 1)
-		logger.Errorf("%v, query: %+v", err, query)
+		logError(err, query, logger)
+		// logger.Errorf("%v, query: %+v", err, query)
 	}
 	return errStr
 }
