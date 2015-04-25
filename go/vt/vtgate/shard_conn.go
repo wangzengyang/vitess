@@ -6,7 +6,6 @@ package vtgate
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -401,10 +400,8 @@ func (sdc *ShardConn) WrapError(in error, endPoint topo.EndPoint, inTransaction 
 	code := tabletconn.ERR_NORMAL
 	serverError, ok := in.(*tabletconn.ServerError)
 	if ok {
-		fmt.Printf("WrapError: TabletConn ServerError: %v\n", serverError)
 		code = serverError.Code
 		in = serverError
-		fmt.Printf("WrapError: TabletConn ServerError code: %v\n", code)
 	}
 
 	shardConnErr := &ShardConnError{
@@ -412,12 +409,6 @@ func (sdc *ShardConn) WrapError(in error, endPoint topo.EndPoint, inTransaction 
 		ShardIdentifier: shardIdentifier,
 		InTransaction:   inTransaction,
 		Errs:            []error{in},
-	}
-	inErr := shardConnErr.Errs[0]
-	fmt.Printf("Type of inErr: %v\n", reflect.TypeOf(inErr).String())
-	_, ok = inErr.(*tabletconn.ServerError)
-	if ok {
-		fmt.Println("WrapError: ServerError caught")
 	}
 	return shardConnErr
 }

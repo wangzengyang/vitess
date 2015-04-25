@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"reflect"
 	"strings"
 	"time"
 
@@ -365,7 +364,7 @@ func (vtg *VTGate) StreamExecute(ctx context.Context, query *proto.Query, sendRe
 
 	if err != nil {
 		normalErrors.Add(statsKey, 1)
-		vtg.logStreamExecute.Errorf("%v, query: %+v", err, query)
+		logError(err, query, vtg.logStreamExecute)
 	}
 	// Now we can send the final Sessoin info.
 	if query.Session != nil {
@@ -407,7 +406,7 @@ func (vtg *VTGate) StreamExecuteKeyspaceIds(ctx context.Context, query *proto.Ke
 
 	if err != nil {
 		normalErrors.Add(statsKey, 1)
-		vtg.logStreamExecuteKeyspaceIds.Errorf("%v, query: %+v", err, query)
+		logError(err, query, vtg.logStreamExecuteKeyspaceIds)
 	}
 	// Now we can send the final Sessoin info.
 	if query.Session != nil {
@@ -449,7 +448,7 @@ func (vtg *VTGate) StreamExecuteKeyRanges(ctx context.Context, query *proto.KeyR
 
 	if err != nil {
 		normalErrors.Add(statsKey, 1)
-		vtg.logStreamExecuteKeyRanges.Errorf("%v, query: %+v", err, query)
+		logError(err, query, vtg.logStreamExecuteKeyRanges)
 	}
 	// Now we can send the final Sessoin info.
 	if query.Session != nil {
@@ -494,7 +493,7 @@ func (vtg *VTGate) StreamExecuteShard(ctx context.Context, query *proto.QuerySha
 
 	if err != nil {
 		normalErrors.Add(statsKey, 1)
-		vtg.logStreamExecuteShard.Errorf("%v, query: %+v", err, query)
+		logError(err, query, vtg.logStreamExecuteShard)
 	}
 	// Now we can send the final Sessoin info.
 	if query.Session != nil {
@@ -547,12 +546,10 @@ func (vtg *VTGate) SplitQuery(ctx context.Context, req *proto.SplitQueryRequest,
 func logError(err error, query interface{}, logger *logutil.ThrottledLogger) {
 	logMethod := logger.Errorf
 	if isErrorCausedByVTGate(err) {
-		fmt.Println("Logging as Error because error was caused by VTGate!")
 		logMethod = logger.Errorf
 	} else {
 		// Any errors that are caused by VTGate dependencies (e.g, VtTablet) should be logged
 		// as errors in those components, but logged to Info in VTGate itself.
-		fmt.Println("Logging as Info because error was not caused by VTGate!")
 		infoErrors.Add("NonVtgateErrors", 1)
 		logMethod = logger.Infof
 	}
@@ -562,16 +559,13 @@ func logError(err error, query interface{}, logger *logutil.ThrottledLogger) {
 func isErrorCausedByVTGate(err error) bool {
 	shardConnErr, ok := err.(*ShardConnError)
 	if ok {
-		fmt.Println("ShardConnError caught")
 		for _, inErr := range shardConnErr.Errs {
-			fmt.Printf("Type of inErr: %v\n", reflect.TypeOf(inErr).String())
 			_, ok := inErr.(*tabletconn.ServerError)
 			if !ok {
 				// Return true if even a single error within the list of ShardConn errors was
 				// caused by VTGate.
 				return true
 			}
-			fmt.Println("ServerError caught")
 		}
 		// All the errors were caused by VtTablet
 		return false
@@ -590,7 +584,6 @@ func handleExecuteError(err error, statsKey []string, query interface{}, logger 
 	} else {
 		normalErrors.Add(statsKey, 1)
 		logError(err, query, logger)
-		// logger.Errorf("%v, query: %+v", err, query)
 	}
 	return errStr
 }
